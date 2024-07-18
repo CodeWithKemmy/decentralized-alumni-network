@@ -23,7 +23,7 @@ struct Association {
     id: u64,
     name: String,
     description: String,
-    alumnis: Vec<u64>, // Field to store alumnis who are members of the association
+    alumnis: Vec<u64>,
     created_at: u64,
 }
 
@@ -55,7 +55,7 @@ struct MentorshipRequest {
     id: u64,
     requester_id: u64,
     mentor_id: u64,
-    status: String, // e.g., "pending", "approved", "rejected"
+    status: String,
     created_at: u64,
 }
 
@@ -177,7 +177,6 @@ struct AlumniPayload {
     graduation_year: u32,
 }
 
-// search_alumni Payload
 #[derive(candid::CandidType, Deserialize, Serialize)]
 struct SearchAlumniPayload {
     name: Option<String>,
@@ -190,14 +189,12 @@ struct AssociationPayload {
     description: String,
 }
 
-// Join_association Payload
 #[derive(candid::CandidType, Deserialize, Serialize)]
 struct JoinAssociationPayload {
     alumni_id: u64,
     association_id: u64,
 }
 
-// leave_association Payload
 #[derive(candid::CandidType, Deserialize, Serialize)]
 struct LeaveAssociationPayload {
     alumni_id: u64,
@@ -215,7 +212,6 @@ struct EventPayload {
     capacity: u32,
 }
 
-// rsvp_event Payload
 #[derive(candid::CandidType, Deserialize, Serialize)]
 struct RsvpEventPayload {
     alumni_id: u64,
@@ -241,6 +237,7 @@ enum Message {
     Error(String),
     NotFound(String),
     InvalidPayload(String),
+    UnAuthorized(String),
 }
 
 #[ic_cdk::update]
@@ -251,12 +248,7 @@ fn create_alumni(payload: AlumniPayload) -> Result<Alumni, Message> {
         ));
     }
 
-    let id = ID_COUNTER
-        .with(|counter| {
-            let current_value = *counter.borrow().get();
-            counter.borrow_mut().set(current_value + 1)
-        })
-        .expect("Cannot increment ID counter");
+    let id = increment_id_counter()?;
 
     let alumni = Alumni {
         id,
@@ -299,19 +291,16 @@ fn get_alumni_by_id(id: u64) -> Result<Alumni, Message> {
 }
 
 #[ic_cdk::update]
-fn create_association(payload: AssociationPayload) -> Result<Association, Message> {
+fn create_association(payload: AssociationPayload, user_id: u64) -> Result<Association, Message> {
+    authenticate_user(user_id)?;
+
     if payload.name.is_empty() || payload.description.is_empty() {
         return Err(Message::InvalidPayload(
             "Ensure 'name' and 'description' are provided.".to_string(),
         ));
     }
 
-    let id = ID_COUNTER
-        .with(|counter| {
-            let current_value = *counter.borrow().get();
-            counter.borrow_mut().set(current_value + 1)
-        })
-        .expect("Cannot increment ID counter");
+    let id = increment_id_counter()?;
 
     let association = Association {
         id,
@@ -322,6 +311,41 @@ fn create_association(payload: AssociationPayload) -> Result<Association, Messag
     };
     ASSOCIATIONS_STORAGE.with(|storage| storage.borrow_mut().insert(id, association.clone()));
     Ok(association)
+}
+
+#[ic_cdk::update]
+fn update_association(id: u64, payload: AssociationPayload, user_id: u64) -> Result<Association, Message> {
+    authenticate_user(user_id)?;
+
+    ASSOCIATIONS_STORAGE.with(|storage| {
+        let mut storage = storage.borrow_mut();
+        if let Some(mut association) = storage.get(&id) {
+            if !payload.name.is_empty() {
+                association.name = payload.name;
+            }
+            if !payload.description.is_empty() {
+                association.description = payload.description;
+            }
+            storage.insert(id, association.clone());
+            Ok(association)
+        } else {
+            Err(Message::NotFound("Association not found".to_string()))
+        }
+    })
+}
+
+#[ic_cdk::update]
+fn delete_association(id: u64, user_id: u64) -> Result<Message, Message> {
+    authenticate_user(user_id)?;
+
+    ASSOCIATIONS_STORAGE.with(|storage| {
+        let mut storage = storage.borrow_mut();
+        if storage.remove(&id).is_some() {
+            Ok(Message::Success("Association deleted.".to_string()))
+        } else {
+            Err(Message::NotFound("Association not found".to_string()))
+        }
+    })
 }
 
 #[ic_cdk::query]
@@ -354,8 +378,9 @@ fn get_association_by_id(id: u64) -> Result<Association, Message> {
 }
 
 #[ic_cdk::update]
-fn create_event(payload: EventPayload) -> Result<Event, Message> {
-    // Validate the payload to ensure all fields are provided
+fn create_event(payload: EventPayload, user_id: u64) -> Result<Event, Message> {
+    authenticate_user(user_id)?;
+
     if payload.title.is_empty()
         || payload.description.is_empty()
         || payload.location.is_empty()
@@ -366,31 +391,23 @@ fn create_event(payload: EventPayload) -> Result<Event, Message> {
         ));
     }
 
-    // Validate the association id to ensure it exists
     let association = ASSOCIATIONS_STORAGE.with(|storage| {
         storage
             .borrow()
-            .iter()
-            .find(|(_, association)| association.id == payload.association_id)
-            .map(|(_, association)| association.clone())
+            .get(&payload.association_id)
+            .map(|assoc| assoc.clone())
     });
     if association.is_none() {
         return Err(Message::NotFound("Association not found".to_string()));
     }
 
-    // Ensure the capacity is greater than 0
     if payload.capacity == 0 {
         return Err(Message::InvalidPayload(
             "Ensure 'capacity' is greater than 0.".to_string(),
         ));
     }
 
-    let id = ID_COUNTER
-        .with(|counter| {
-            let current_value = *counter.borrow().get();
-            counter.borrow_mut().set(current_value + 1)
-        })
-        .expect("Cannot increment ID counter");
+    let id = increment_id_counter()?;
 
     let event = Event {
         id,
@@ -406,6 +423,51 @@ fn create_event(payload: EventPayload) -> Result<Event, Message> {
     };
     EVENTS_STORAGE.with(|storage| storage.borrow_mut().insert(id, event.clone()));
     Ok(event)
+}
+
+#[ic_cdk::update]
+fn update_event(id: u64, payload: EventPayload, user_id: u64) -> Result<Event, Message> {
+    authenticate_user(user_id)?;
+
+    EVENTS_STORAGE.with(|storage| {
+        let mut storage = storage.borrow_mut();
+        if let Some(mut event) = storage.get(&id) {
+            if !payload.title.is_empty() {
+                event.title = payload.title;
+            }
+            if !payload.description.is_empty() {
+                event.description = payload.description;
+            }
+            if !payload.location.is_empty() {
+                event.location = payload.location;
+            }
+            if !payload.organizer.is_empty() {
+                event.organizer = payload.organizer;
+            }
+            if payload.capacity > 0 {
+                event.capacity = payload.capacity;
+            }
+            event.date_time = payload.date_time;
+            storage.insert(id, event.clone());
+            Ok(event)
+        } else {
+            Err(Message::NotFound("Event not found".to_string()))
+        }
+    })
+}
+
+#[ic_cdk::update]
+fn delete_event(id: u64, user_id: u64) -> Result<Message, Message> {
+    authenticate_user(user_id)?;
+
+    EVENTS_STORAGE.with(|storage| {
+        let mut storage = storage.borrow_mut();
+        if storage.remove(&id).is_some() {
+            Ok(Message::Success("Event deleted.".to_string()))
+        } else {
+            Err(Message::NotFound("Event not found".to_string()))
+        }
+    })
 }
 
 #[ic_cdk::query]
@@ -437,17 +499,14 @@ fn get_event_by_id(id: u64) -> Result<Event, Message> {
     })
 }
 
-// Function to RSVP to an event
 #[ic_cdk::update]
 fn rsvp_event(payload: RsvpEventPayload) -> Result<Message, Message> {
-    // Validate the user input to ensure all fields are provided
-    if payload.alumni_id == 100 || payload.event_id == 100 {
+    if payload.alumni_id == 0 || payload.event_id == 0 {
         return Err(Message::InvalidPayload(
             "Ensure 'alumni_id' and 'event_id' are provided.".to_string(),
         ));
     }
 
-    // Validate alumni id to ensure it exists
     let alumni_exists = ALUMNI_STORAGE.with(|storage| {
         storage
             .borrow()
@@ -458,54 +517,41 @@ fn rsvp_event(payload: RsvpEventPayload) -> Result<Message, Message> {
         return Err(Message::NotFound("Alumni not found".to_string()));
     }
 
-    // Validate event id to ensure it exists
     let event = EVENTS_STORAGE.with(|storage| {
         storage
             .borrow()
-            .iter()
-            .find(|(_, event)| event.id == payload.event_id)
-            .map(|(_, event)| event.clone())
+            .get(&payload.event_id)
+            .map(|event| event.clone())
     });
     if event.is_none() {
         return Err(Message::NotFound("Event not found".to_string()));
     }
 
-    // Return an error message if the alumni has already rsvp'd to the event
-    let has_rsvp = event
-        .as_ref()
-        .unwrap()
-        .attendees
-        .iter()
-        .any(|id| id == &payload.alumni_id.to_string());
-    if has_rsvp {
+    let mut event = event.unwrap();
+    if event.attendees.len() as u32 >= event.capacity {
+        return Err(Message::Error("Event is full.".to_string()));
+    }
+
+    if event.attendees.contains(&payload.alumni_id.to_string()) {
         return Err(Message::Error(
             "Alumni has already RSVP'd to the event.".to_string(),
         ));
     }
 
-    // Logic to add alumni to the event's attendee list if the list is not full.
-    // If the list is full, return an error message.
-    let mut event = event.unwrap();
-    if event.attendees.len() as u32 >= event.capacity {
-        return Err(Message::Error("Sorry the Event is full.".to_string()));
-    }
     event.attendees.push(payload.alumni_id.to_string());
     EVENTS_STORAGE.with(|storage| storage.borrow_mut().insert(payload.event_id, event));
 
     Ok(Message::Success("RSVP successful.".to_string()))
 }
 
-// Function to join an association
 #[ic_cdk::update]
 fn join_association(payload: JoinAssociationPayload) -> Result<Message, Message> {
-    // Validate the user input to ensure all fields are provided
-    if payload.alumni_id == 10 || payload.association_id == 0 {
+    if payload.alumni_id == 0 || payload.association_id == 0 {
         return Err(Message::InvalidPayload(
             "Ensure 'alumni_id' and 'association_id' are provided.".to_string(),
         ));
     }
 
-    // Validate alumni id to ensure it exists
     let alumni_exists = ALUMNI_STORAGE.with(|storage| {
         storage
             .borrow()
@@ -516,56 +562,37 @@ fn join_association(payload: JoinAssociationPayload) -> Result<Message, Message>
         return Err(Message::NotFound("Alumni not found".to_string()));
     }
 
-    // Validate association id to ensure it exists
     let association = ASSOCIATIONS_STORAGE.with(|storage| {
         storage
             .borrow()
-            .iter()
-            .find(|(_, association)| association.id == payload.association_id)
-            .map(|(_, association)| association.clone())
+            .get(&payload.association_id)
+            .map(|assoc| assoc.clone())
     });
     if association.is_none() {
         return Err(Message::NotFound("Association not found".to_string()));
     }
 
-    // Check if the alumni is already a member of the association
-    let is_member = association
-        .as_ref()
-        .unwrap()
-        .alumnis
-        .iter()
-        .any(|&id| id == payload.alumni_id);
-
-    if is_member {
+    let mut association = association.unwrap();
+    if association.alumnis.contains(&payload.alumni_id) {
         return Err(Message::Error(
             "Alumni is already a member of the association.".to_string(),
         ));
     }
 
-    // Logic to add alumni to the association's member list
-    ASSOCIATIONS_STORAGE.with(|storage| {
-        if let Some(mut assoc) = association {
-            assoc.alumnis.push(payload.alumni_id);
-            storage.borrow_mut().insert(payload.association_id, assoc);
-        }
-    });
+    association.alumnis.push(payload.alumni_id);
+    ASSOCIATIONS_STORAGE.with(|storage| storage.borrow_mut().insert(payload.association_id, association));
 
-    Ok(Message::Success(
-        "Alumni joined the association.".to_string(),
-    ))
+    Ok(Message::Success("Alumni joined the association.".to_string()))
 }
 
-// Function to leave an association
 #[ic_cdk::update]
 fn leave_association(payload: LeaveAssociationPayload) -> Result<Message, Message> {
-    // validate the user input to ensure all fields are provided
-    if payload.alumni_id == 10 || payload.association_id == 0 {
+    if payload.alumni_id == 0 || payload.association_id == 0 {
         return Err(Message::InvalidPayload(
             "Ensure 'alumni_id' and 'association_id' are provided.".to_string(),
         ));
     }
 
-    // Validate alumni id to ensure it exists
     let alumni_exists = ALUMNI_STORAGE.with(|storage| {
         storage
             .borrow()
@@ -576,69 +603,52 @@ fn leave_association(payload: LeaveAssociationPayload) -> Result<Message, Messag
         return Err(Message::NotFound("Alumni not found".to_string()));
     }
 
-    // Validate association id to ensure it exists
     let association = ASSOCIATIONS_STORAGE.with(|storage| {
         storage
             .borrow()
-            .iter()
-            .find(|(_, association)| association.id == payload.association_id)
-            .map(|(_, association)| association.clone())
+            .get(&payload.association_id)
+            .map(|assoc| assoc.clone())
     });
     if association.is_none() {
         return Err(Message::NotFound("Association not found".to_string()));
     }
 
-    // Logic to remove alumni from the association's member list
-    ASSOCIATIONS_STORAGE.with(|storage| {
-        if let Some(mut assoc) = association {
-            assoc.alumnis.retain(|&id| id != payload.alumni_id);
-            storage.borrow_mut().insert(payload.association_id, assoc);
-        }
-    });
+    let mut association = association.unwrap();
+    association.alumnis.retain(|&id| id != payload.alumni_id);
+    ASSOCIATIONS_STORAGE.with(|storage| storage.borrow_mut().insert(payload.association_id, association));
 
     Ok(Message::Success("Alumni left the association.".to_string()))
 }
 
-// Function to send a message to association members
 #[ic_cdk::update]
 fn send_message_to_association(payload: MessagePayload) -> Result<Message, Message> {
-    // Validate the user input to ensure all fields are provided
     if payload.content.is_empty() {
         return Err(Message::InvalidPayload(
             "Ensure 'content' is provided.".to_string(),
         ));
     }
 
-    // Validate sender id to ensure it exists
     let sender = ALUMNI_STORAGE.with(|storage| {
         storage
             .borrow()
-            .iter()
-            .find(|(_, alumni)| alumni.id == payload.sender_id)
-            .map(|(_, alumni)| alumni.clone())
+            .get(&payload.sender_id)
+            .map(|alumni| alumni.clone())
     });
     if sender.is_none() {
         return Err(Message::NotFound("Sender not found".to_string()));
     }
 
-    // Validate association id to ensure it exists
     let association = ASSOCIATIONS_STORAGE.with(|storage| {
         storage
             .borrow()
-            .iter()
-            .find(|(_, association)| association.id == payload.association_id)
-            .map(|(_, association)| association.clone())
+            .get(&payload.association_id)
+            .map(|assoc| assoc.clone())
     });
     if association.is_none() {
         return Err(Message::NotFound("Association not found".to_string()));
     }
 
-    let id = ID_COUNTER
-        .with(|counter| {
-            let current_value = *counter.borrow().get();
-            counter.borrow_mut().set(current_value + 1)
-        })
-        .expect("Cannot increment ID counter");
+    let id = increment_id_counter()?;
 
     let message = MessageToAssociation {
         id,
@@ -653,17 +663,14 @@ fn send_message_to_association(payload: MessagePayload) -> Result<Message, Messa
     ))
 }
 
-// Function to search alumni by name or graduation year
 #[ic_cdk::query]
 fn search_alumni(payload: SearchAlumniPayload) -> Result<Vec<Alumni>, Message> {
-    // Validate the user input to ensure at least one field is provided
     if payload.name.is_none() && payload.graduation_year.is_none() {
         return Err(Message::InvalidPayload(
             "Ensure 'name' or 'graduation_year' is provided.".to_string(),
         ));
     }
 
-    // Logic to search alumni by name or graduation year
     ALUMNI_STORAGE.with(|storage| {
         let alumni: Vec<Alumni> = storage
             .borrow()
@@ -692,45 +699,33 @@ fn search_alumni(payload: SearchAlumniPayload) -> Result<Vec<Alumni>, Message> {
     })
 }
 
-// Function to request mentorship
 #[ic_cdk::update]
 fn request_mentorship(payload: MentorshipRequestPayload) -> Result<MentorshipRequest, Message> {
-    // Validate the requester to ensure it exists
     let requester = ALUMNI_STORAGE.with(|storage| {
         storage
             .borrow()
-            .iter()
-            .find(|(_, alumni)| alumni.id == payload.requester_id)
-            .map(|(_, alumni)| alumni.clone())
+            .get(&payload.requester_id)
+            .map(|alumni| alumni.clone())
     });
     if requester.is_none() {
         return Err(Message::NotFound("Requester not found".to_string()));
     }
 
-    // Validate the mentor to ensure it exists
     let mentor = ALUMNI_STORAGE.with(|storage| {
         storage
             .borrow()
-            .iter()
-            .find(|(_, alumni)| alumni.id == payload.mentor_id)
-            .map(|(_, alumni)| alumni.clone())
+            .get(&payload.mentor_id)
+            .map(|alumni| alumni.clone())
     });
     if mentor.is_none() {
         return Err(Message::NotFound("Mentor not found".to_string()));
     }
 
-    // Ensure that the alumni cannot mentor themselves
     if payload.requester_id == payload.mentor_id {
         return Err(Message::Error("You cannot mentor yourself.".to_string()));
     }
 
-    // Logic to create a mentorship request
-    let id = ID_COUNTER
-        .with(|counter| {
-            let current_value = *counter.borrow().get();
-            counter.borrow_mut().set(current_value + 1)
-        })
-        .expect("Cannot increment ID counter");
+    let id = increment_id_counter()?;
 
     let mentorship_request = MentorshipRequest {
         id,
@@ -744,33 +739,87 @@ fn request_mentorship(payload: MentorshipRequestPayload) -> Result<MentorshipReq
     Ok(mentorship_request)
 }
 
-// Function to approve mentorship request
 #[ic_cdk::update]
-fn approve_mentorship_request(request_id: u64) -> Result<Message, Message> {
-    // Validate request ID to ensure it exists
-    let mentorship_request = MENTORSHIP_REQUESTS_STORAGE.with(|storage| {
-        storage
-            .borrow()
-            .iter()
-            .find(|(_, request)| request.id == request_id)
-            .map(|(_, request)| request.clone())
-    });
-    if mentorship_request.is_none() {
-        return Err(Message::NotFound(
-            "Mentorship request not found".to_string(),
-        ));
-    }
+fn approve_mentorship_request(request_id: u64, mentor_id: u64) -> Result<Message, Message> {
+    MENTORSHIP_REQUESTS_STORAGE.with(|storage| {
+        let mut storage = storage.borrow_mut();
+        if let Some(mut request) = storage.get(&request_id) {
+            if request.mentor_id != mentor_id {
+                return Err(Message::UnAuthorized(
+                    "Only the assigned mentor can approve the request.".to_string(),
+                ));
+            }
+            request.status = "approved".to_string();
+            storage.insert(request_id, request);
+            Ok(Message::Success("Mentorship request approved.".to_string()))
+        } else {
+            Err(Message::NotFound(
+                "Mentorship request not found".to_string(),
+            ))
+        }
+    })
+}
 
-    // Update the request status to "approved"
-    let mut request = mentorship_request.unwrap();
-    request.status = "approved".to_string();
-    MENTORSHIP_REQUESTS_STORAGE.with(|storage| storage.borrow_mut().insert(request_id, request));
+#[ic_cdk::update]
+fn update_alumni(id: u64, payload: AlumniPayload, user_id: u64) -> Result<Alumni, Message> {
+    authenticate_user(user_id)?;
 
-    Ok(Message::Success("Mentorship request approved.".to_string()))
+    ALUMNI_STORAGE.with(|storage| {
+        let mut storage = storage.borrow_mut();
+        if let Some(mut alumni) = storage.get(&id) {
+            if !payload.name.is_empty() {
+                alumni.name = payload.name;
+            }
+            if !payload.email.is_empty() {
+                alumni.email = payload.email;
+            }
+            alumni.graduation_year = payload.graduation_year;
+            storage.insert(id, alumni.clone());
+            Ok(alumni)
+        } else {
+            Err(Message::NotFound("Alumni not found".to_string()))
+        }
+    })
+}
+
+#[ic_cdk::update]
+fn delete_alumni(id: u64, user_id: u64) -> Result<Message, Message> {
+    authenticate_user(user_id)?;
+
+    ALUMNI_STORAGE.with(|storage| {
+        let mut storage = storage.borrow_mut();
+        if storage.remove(&id).is_some() {
+            Ok(Message::Success("Alumni deleted.".to_string()))
+        } else {
+            Err(Message::NotFound("Alumni not found".to_string()))
+        }
+    })
 }
 
 fn current_time() -> u64 {
     time()
+}
+
+fn authenticate_user(user_id: u64) -> Result<(), Message> {
+    // Simple authentication check (this could be expanded to a real authentication system)
+    if user_id == 0 {
+        return Err(Message::UnAuthorized("Unauthorized user".to_string()));
+    }
+    Ok(())
+}
+
+fn increment_id_counter() -> Result<u64, Message> {
+    ID_COUNTER.with(|counter| {
+        let mut counter = counter.borrow_mut();
+        let current_value = *counter.get();
+        if current_value == u64::MAX {
+            return Err(Message::Error("ID counter overflow".to_string()));
+        }
+        counter.set(current_value + 1).map_err(|e| {
+            Message::Error(format!("Failed to increment counter: {:?}", e))
+        })?;
+        Ok(current_value + 1)
+    })
 }
 
 #[derive(candid::CandidType, Deserialize, Serialize)]
