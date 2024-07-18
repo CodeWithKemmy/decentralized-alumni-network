@@ -59,6 +59,7 @@ type Message = variant {
   InvalidPayload : text;
   NotFound : text;
   Success : text;
+  UnAuthorized : text;
 };
 type MessagePayload = record {
   association_id : nat64;
@@ -79,10 +80,13 @@ type SearchAlumniPayload = record {
   graduation_year : opt nat32;
 };
 service : {
-  approve_mentorship_request : (nat64) -> (Result);
+  approve_mentorship_request : (nat64, nat64) -> (Result);
   create_alumni : (AlumniPayload) -> (Result_1);
-  create_association : (AssociationPayload) -> (Result_2);
-  create_event : (EventPayload) -> (Result_3);
+  create_association : (AssociationPayload, nat64) -> (Result_2);
+  create_event : (EventPayload, nat64) -> (Result_3);
+  delete_alumni : (nat64, nat64) -> (Result);
+  delete_association : (nat64, nat64) -> (Result);
+  delete_event : (nat64, nat64) -> (Result);
   get_alumni_by_id : (nat64) -> (Result_1) query;
   get_alumnis : () -> (Result_4) query;
   get_association_by_id : (nat64) -> (Result_2) query;
@@ -95,4 +99,7 @@ service : {
   rsvp_event : (RsvpEventPayload) -> (Result);
   search_alumni : (SearchAlumniPayload) -> (Result_4) query;
   send_message_to_association : (MessagePayload) -> (Result);
+  update_alumni : (nat64, AlumniPayload, nat64) -> (Result_1);
+  update_association : (nat64, AssociationPayload, nat64) -> (Result_2);
+  update_event : (nat64, EventPayload, nat64) -> (Result_3);
 }
